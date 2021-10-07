@@ -5,7 +5,6 @@
 #include <unistd.h>
 
 #include "util.h"
-#include "debug.h"
 
 void read_string(char *buf, size_t n)
 {

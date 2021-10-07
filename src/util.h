@@ -1,5 +1,5 @@
-#ifndef _BC_UTIL_H_
-#define _BC_UTIL_H_
+#ifndef _UTIL_H_
+#define _UTIL_H_
 
 #include <stdint.h>
 
