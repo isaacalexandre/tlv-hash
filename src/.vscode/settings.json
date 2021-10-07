@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "libtlv.h": "c",
+        "stdbool.h": "c"
+    }
+}
