@@ -1,10 +1,14 @@
+ifeq ("$(PLATFORM)", "86")
+	ARCH=-m32
+endif
+
 CC = gcc
 CFLAGS += $(ARCH) -ffunction-sections -fPIC -Werror -Wno-format-truncation -Wall -Wextra -O2 -I.
 LDFLAGS = -shared
 RM = rm -f
 
 TARGET_LIB = libtlv.so
-SRCS_LIB = util.c libtlv.c 
+SRCS_LIB = util.c libtlv.c llist.c
 OBJS_LIB = $(SRCS_LIB:.c=.o)
 
 TARGET_BIN = apptesthash

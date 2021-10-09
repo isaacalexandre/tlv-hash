@@ -2,16 +2,164 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdlib.h>
-
+#include "llist.h"
 #include "libtlv.h"
 #include "util.h"
 
-
+/******************************************************
+ *                      Macros
+ ******************************************************/
 #define ISOLATE_BYTE3(x) ((uint8_t) ((x & 0xFF000000) >> 24))
 #define ISOLATE_BYTE2(x) ((uint8_t) ((x & 0x00FF0000) >> 16))
 #define ISOLATE_BYTE1(x) ((uint8_t) ((x & 0x0000FF00) >> 8))
 #define ISOLATE_BYTE0(x) ((uint8_t)  (x & 0x000000FF))
+#define UNUSED(x) (void)(x)
+/******************************************************
+ *                    Constants
+ ******************************************************/
+#define BER_TLV_CONSTRUCTED_BIT    0x20
+/******************************************************
+ *                   Enumerations
+ ******************************************************/
 
+/******************************************************
+ *                 Type Definitions
+ ******************************************************/
+typedef void * ber_tlv_t;
+
+typedef struct {
+    uint32_t   tag;
+    uint32_t   length;
+    uint8_t *  value;
+} ber_tlv_object_t;
+
+typedef struct {
+    uint32_t   tag;
+    uint16_t   num;//Number of children
+    uint32_t   child_tag[STRUCT_NUM_CHILD];
+} ber_tlv_constructed_object_t;
+/******************************************************
+ *                    Structures
+ ******************************************************/
+
+/******************************************************
+ *               Static Function Declarations
+ ******************************************************/
+
+/******************************************************
+ *               Variable Definitions
+ ******************************************************/
+llist *tags_primitive; 
+llist *tags_constructed; 
+bool b_debug_enabled = false;
+/******************************************************
+ *               Function Definitions
+ ******************************************************/
+ber_tlv_t ber_tlv_create_object(void);
+ber_tlv_t ber_tlv_parse_TLV(uint8_t *data, uint32_t dataLength);
+
+bool ber_tlv_add_data(ber_tlv_t tlv, uint8_t *data, uint32_t dataLength);
+bool ber_tlv_add_TLV(ber_tlv_t tlv, ber_tlv_t tlvToAdd);
+
+bool ber_tlv_set_tag(ber_tlv_t tlv, uint32_t tag);
+bool ber_tlv_serialize(ber_tlv_t tlv, uint8_t *output, uint32_t *outputLength);
+
+uint32_t ber_tlv_get_tag(ber_tlv_t tlv);
+uint32_t ber_tlv_get_length(ber_tlv_t tlv);
+uint8_t *ber_tlv_get_value(ber_tlv_t tlv);
+
+void ber_tlv_delete_value(ber_tlv_t tlv);
+void ber_tlv_delete_object(ber_tlv_t tlv);
+
+bool ber_tlv_is_constructed(ber_tlv_t tlv);
+void ber_tlv_update_value(ber_tlv_t tlv, uint8_t *data, uint32_t data_len);
+/******************************************************
+ *               Interface functions
+ ******************************************************/
+
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint32_t ber_tlv_init(bool b_debug)
+{
+    //Initialize thes lists and the debug
+    tags_primitive = llist_create(NULL);
+    tags_constructed = llist_create(NULL); 
+    b_debug_enabled = b_debug;
+    if(tags_constructed == NULL || tags_primitive == NULL)
+        return -1;
+    else
+        return 0;     
+}
+
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint32_t ber_tlv_terminate(void)
+{
+    return 0;
+}
+
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint32_t ber_tlv_set(uint8_t * p_value, int32_t i32_size)
+{    
+    //Allocate in memory the object
+    ber_tlv_t* ptlv = ber_tlv_parse_TLV(p_value, i32_size);   
+    ber_tlv_object_t* ptlv_obj = (ber_tlv_object_t*)ptlv;  
+
+    if(ptlv == NULL)
+        goto error;
+
+    if(b_debug_enabled) {
+        printf("TAG:%02X LEN:%d DATA: ",ptlv_obj->tag ,ptlv_obj->length);
+        for(uint32_t i=0; i < ptlv_obj->length; i++)
+            printf("%02X ",ptlv_obj->value[i]);
+    }
+
+    if(ber_tlv_is_constructed((ber_tlv_t*)ptlv)) {
+        printf("TESTE");
+    }
+
+    return 0;
+
+    error:
+    ber_tlv_delete_object((ber_tlv_t*)ptlv);
+    return -1;
+}
+
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint32_t ber_tlv_get(uint8_t * resp_str, int32_t *i32_resp_size, uint8_t * p_value, int32_t i32_size)
+{
+    UNUSED(resp_str);
+    UNUSED(i32_resp_size);
+    UNUSED(p_value);
+    UNUSED(i32_size);
+    return 0;
+}
 
 /****************************************************************************************
  * \brief
@@ -535,7 +683,7 @@ uint8_t *ber_tlv_get_value(ber_tlv_t tlv)
  * \return
  *
  ***************************************************************************************/
-ber_tlv_t ber_tlv_parse_TLV(uint8_t *data, uint32_t dataLength, uint32_t *bytesParsed)
+ber_tlv_t ber_tlv_parse_TLV(uint8_t *data, uint32_t dataLength)
 {
     ber_tlv_object_t *ptr = NULL;
     uint32_t bytesLeft;
@@ -757,11 +905,6 @@ ber_tlv_t ber_tlv_parse_TLV(uint8_t *data, uint32_t dataLength, uint32_t *bytesP
         memset (ptr->value, 0, ptr->length + 1);
         memcpy (ptr->value, &(data[offset]), ptr->length);
         offset += ptr->length;
-    }
-
-    //update how many bytes we actually parsed
-    if (bytesParsed) {
-        *bytesParsed = offset;
     }
 
     //done

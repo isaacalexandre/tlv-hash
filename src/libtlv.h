@@ -7,37 +7,41 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+/******************************************************
+ *                      Macros
+ ******************************************************/
 
-//type definitions
-typedef void * ber_tlv_t;
+/******************************************************
+ *                    Constants
+ ******************************************************/
+#define STRUCT_NUM_CHILD 10
+/******************************************************
+ *                   Enumerations
+ ******************************************************/
 
-typedef struct {
-    uint32_t   tag;
-    uint32_t   length;
-    uint8_t *  value;
-} ber_tlv_object_t;
+/******************************************************
+ *                 Type Definitions
+ ******************************************************/
 
-//constants
-#define BER_TLV_CONSTRUCTED_BIT    0x20
+/******************************************************
+ *                    Structures
+ ******************************************************/
 
-ber_tlv_t ber_tlv_create_object(void);
-ber_tlv_t ber_tlv_parse_TLV(uint8_t *data, uint32_t dataLength, uint32_t *bytesParsed);
+/******************************************************
+ *               Static Function Declarations
+ ******************************************************/
 
-bool ber_tlv_add_data(ber_tlv_t tlv, uint8_t *data, uint32_t dataLength);
-bool ber_tlv_add_TLV(ber_tlv_t tlv, ber_tlv_t tlvToAdd);
+/******************************************************
+ *               Variable Definitions
+ ******************************************************/
 
-bool ber_tlv_set_tag(ber_tlv_t tlv, uint32_t tag);
-bool ber_tlv_serialize(ber_tlv_t tlv, uint8_t *output, uint32_t *outputLength);
-
-uint32_t ber_tlv_get_tag(ber_tlv_t tlv);
-uint32_t ber_tlv_get_length(ber_tlv_t tlv);
-uint8_t *ber_tlv_get_value(ber_tlv_t tlv);
-
-void ber_tlv_delete_value(ber_tlv_t tlv);
-void ber_tlv_delete_object(ber_tlv_t tlv);
-
-bool ber_tlv_is_constructed(ber_tlv_t tlv);
-void ber_tlv_update_value(ber_tlv_t tlv, uint8_t *data, uint32_t data_len);
+/******************************************************
+ *               Function Definitions
+ ******************************************************/
+uint32_t ber_tlv_init(bool b_debug);
+uint32_t ber_tlv_terminate(void);
+uint32_t ber_tlv_set(uint8_t * p_value, int32_t i32_size);
+uint32_t ber_tlv_get(uint8_t * resp_str, int32_t *i32_resp_size, uint8_t * p_value, int32_t i32_size);
 
 #ifdef __cplusplus
 }
