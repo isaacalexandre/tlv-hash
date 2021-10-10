@@ -124,7 +124,7 @@ int main (int argc, char *argv[])
         //Print in the console the commands and corresponding number
         for (i = 0; i < u32_cmd_number; i++)
             printf("%4d. %-42s\n", i, commands[i].func_name);
-        printf("\n\n>");
+        printf("\n>");
         //Get from the user the selected command
         u32_option = read_ulong();
 
@@ -138,7 +138,7 @@ int main (int argc, char *argv[])
             return 0;
         } else if (u32_option < u32_cmd_number) {            
             if (commands[u32_option].func != NULL) { //Verify if the function is already populated 
-                printf("\n>");
+                printf("> Input: ");
                 read_string((char*)u8_buffer, BUFFER_INPUT_SIZE); //Get from the user the BER-TLV
                 convert_ascii_to_hex(u8_buffer_hex, &i32_size, (char *)u8_buffer, strlen((const char *)u8_buffer)); //Convert to Hex
                 u32_ret = commands[u32_option].func(u8_buffer_hex, i32_size); //Use the function in the struct array "commands[]"

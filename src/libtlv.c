@@ -56,7 +56,7 @@ bool b_debug_enabled = false;
  *               Function Definitions
  ******************************************************/
 ber_tlv_t ber_tlv_create_object(void);
-ber_tlv_t ber_tlv_parse_TLV(uint8_t *data, uint32_t dataLength);
+ber_tlv_t ber_tlv_parse(uint8_t *data, uint32_t dataLength);
 
 bool ber_tlv_add_data(ber_tlv_t tlv, uint8_t *data, uint32_t dataLength);
 bool ber_tlv_add_TLV(ber_tlv_t tlv, ber_tlv_t tlvToAdd);
@@ -73,6 +73,8 @@ void ber_tlv_delete_object(ber_tlv_t tlv);
 
 bool ber_tlv_is_constructed(ber_tlv_t tlv);
 void ber_tlv_update_value(ber_tlv_t tlv, uint8_t *data, uint32_t data_len);
+
+uint32_t ber_tlv_push_to_list(ber_tlv_t tlv);
 /******************************************************
  *               Interface functions
  ******************************************************/
@@ -121,10 +123,10 @@ uint32_t ber_tlv_terminate(void)
 uint32_t ber_tlv_set(uint8_t * p_value, int32_t i32_size)
 {    
     //Allocate in memory the object
-    ber_tlv_t* ptlv = ber_tlv_parse_TLV(p_value, i32_size);   
+    ber_tlv_t* ptlv = ber_tlv_parse(p_value, i32_size);   
     ber_tlv_object_t* ptlv_obj = (ber_tlv_object_t*)ptlv;  
 
-    if(ptlv == NULL)
+    if(ptlv == NULL || ptlv_obj == NULL)
         goto error;
 
     if(b_debug_enabled) {
@@ -132,15 +134,15 @@ uint32_t ber_tlv_set(uint8_t * p_value, int32_t i32_size)
         for(uint32_t i=0; i < ptlv_obj->length; i++)
             printf("%02X ",ptlv_obj->value[i]);
     }
-
-    if(ber_tlv_is_constructed((ber_tlv_t*)ptlv)) {
+    
+    if(ber_tlv_is_constructed(ptlv)) {
         printf("TESTE");
     }
 
     return 0;
 
     error:
-    ber_tlv_delete_object((ber_tlv_t*)ptlv);
+    ber_tlv_delete_object(ptlv);
     return -1;
 }
 
@@ -159,6 +161,22 @@ uint32_t ber_tlv_get(uint8_t * resp_str, int32_t *i32_resp_size, uint8_t * p_val
     UNUSED(p_value);
     UNUSED(i32_size);
     return 0;
+}
+
+
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint32_t ber_tlv_push_to_list(ber_tlv_t tlv)
+{
+    UNUSED(tlv);
+    return 0;
+
 }
 
 /****************************************************************************************
@@ -683,232 +701,68 @@ uint8_t *ber_tlv_get_value(ber_tlv_t tlv)
  * \return
  *
  ***************************************************************************************/
-ber_tlv_t ber_tlv_parse_TLV(uint8_t *data, uint32_t dataLength)
+ber_tlv_t ber_tlv_parse(uint8_t *data, uint32_t dataLength)
 {
     ber_tlv_object_t *ptr = NULL;
-    uint32_t bytesLeft;
-    uint32_t offset;
-    uint32_t tag;
-    uint32_t length;
-    uint32_t tagBytes;
+    uint32_t offset = 0;
+    uint16_t u16_count_len = 0;
 
+    //Sanity checks
+    if (!data) 
+        goto error;
 
-    //sanity checks
-    if (!data) {
-        return NULL;
-    }
-
-    //start parsing
-    tagBytes = 1; //our tag uses at least 1 byte
-    bytesLeft = dataLength;
-    tag = 0;
-    length = 0;
-    offset = 0;
-
-    //parse tag - byte 1
-    //are there bytes left?
-    if (bytesLeft < 1) {
-        return NULL;
-    }
-
-    //update tag value
-    tag += (uint32_t) data[offset];
-
-    //check if more tag bytes follow
-    if ((data[offset] & 0x1F) == 0x1F) {
-        tagBytes++;
-    }
-
-    //we used 1 byte
-    offset += 1;
-    bytesLeft -= 1;
-
-    //parse tag - byte 2
-    if (tagBytes >= 2) {
-        //are there bytes left?
-        if (bytesLeft < 1) {
-            return NULL;
-        }
-
-        //update tag value
-        tag *= 256;
-        tag += (uint32_t) data[offset];
-
-        //check if more tag bytes follow
-        if ((data[offset] & 0x80) == 0x80) {
-            tagBytes++;                            //there's one more tagByte following
-
-        }
-        //we used 1 byte
-        offset += 1;
-        bytesLeft -= 1;
-    }
-
-    //parse tag - byte 3
-    if (tagBytes >= 3) {
-        //are there bytes left?
-        if (bytesLeft < 1) {
-            return NULL;
-        }
-
-        //update tag value
-        tag *= 256;
-        tag += (uint32_t) data[offset];
-
-        //check if more tag bytes follow
-        if ((data[offset] & 0x80) == 0x80) {
-            tagBytes++;     //there's one more tagByte following
-
-        }
-        //we used 1 byte
-        offset += 1;
-        bytesLeft -= 1;
-    }
-
-    //parse tag - byte 4
-    if (tagBytes >= 4) {
-        //are there bytes left?
-        if (bytesLeft < 1) {
-            return NULL;
-        }
-
-        //update tag value
-        tag *= 256;
-        tag += (uint32_t) data[offset];
-
-        //check if more tag bytes follow
-        if ((data[offset] & 0x80) == 0x80) {
-            return NULL; //we only support tags up to 4 bytes long
-
-        }
-        //we used 1 byte
-        offset += 1;
-        bytesLeft -= 1;
-    }
-
-    //parse length
-    //are there bytes left?
-    if (bytesLeft < 1) {
-        return NULL;
-    }
-
-    //check how many length bytes we have
-    if (data[offset] <= 127) {
-        length = (uint32_t) data[offset];
-
-        //we used 1 byte
-        offset += 1;
-        bytesLeft -= 1;
-    } else {
-        switch (data[offset]) {
-        case 0x81:
-            //are there enough bytes left?
-            if (bytesLeft < 2) {
-                return NULL;
-            }
-
-            //fetch length
-            length = (uint32_t) data[offset + 1];
-
-            //we used 2 bytes
-            offset += 2;
-            bytesLeft -= 2;
-
-            break;
-
-        case 0x82:
-            //are there enough bytes left?
-            if (bytesLeft < 3) {
-                return NULL;
-            }
-
-            //fetch length
-            length = (uint32_t) data[offset + 1];
-            length *= 256;
-            length += (uint32_t) data[offset + 2];
-
-            //we used 3 bytes
-            offset += 3;
-            bytesLeft -= 3;
-
-            break;
-
-        case 0x83:
-            //are there enough bytes left?
-            if (bytesLeft < 4) {
-                return NULL;
-            }
-
-            //fetch length
-            length = (uint32_t) data[offset + 1];
-            length *= 256;
-            length += (uint32_t) data[offset + 2];
-            length *= 256;
-            length += (uint32_t) data[offset + 3];
-
-            //we used 4 bytes
-            offset += 4;
-            bytesLeft -= 4;
-
-
-            break;
-
-        case 0x84:
-            //are there enough bytes left?
-            if (bytesLeft < 5) {
-                return NULL;
-            }
-
-            //fetch length
-            length = (uint32_t) data[offset + 1];
-            length *= 256;
-            length += (uint32_t) data[offset + 2];
-            length *= 256;
-            length += (uint32_t) data[offset + 3];
-            length *= 256;
-            length += (uint32_t) data[offset + 4];
-
-            //we used 5 bytes
-            offset += 5;
-            bytesLeft -= 5;
-
-            break;
-
-        default:
-            return NULL; //non-supported length
-        }
-    }
-
-    //check if there are enough bytes left for the value
-    if (length > bytesLeft) {
-        return NULL;
-    }
-
-    //create a TLV to return
+    //Allocate memory
     ptr = (ber_tlv_object_t *) malloc(sizeof (ber_tlv_object_t));
-    if (!ptr) {
-        return NULL;
+    if (!ptr) 
+       goto error;    
+
+    //Set 1 byte tag
+    ptr->tag = data[offset];
+
+    //Verify if tag have more then 1 Byte and increment offset
+    if ((data[offset++] & 0x1F) == 0x1F) {
+        do{ //Read the othr bytes tag
+            ptr->tag <<= 8;//Shift
+            ptr->tag |= data[offset++];
+        }while(offset < 4 && (data[offset-1] & 0x80) != 0);//Tag max length and verify if have another byte
+    } 
+    //Check the length
+    if (data[offset] <= 127) { //Only one byte of length
+        ptr->length = (uint32_t)data[offset++]; //Increment to the data
+    } else if ((data[offset] >= 0x81) && (data[offset] <= 0x84)) {//Verify how many bytes the TLV have
+        //Increment the length until finish the bytes   
+        u16_count_len = (data[offset] & 0x0F);//Get the last nibble of the first byte to analyse how many bytes remains
+        do{
+            ptr->length <<= 8;//Shit
+            ptr->length |= data[++offset];//Increment and copy to the length
+            u16_count_len--;
+        }while(u16_count_len > 0);
+        offset++; //Increment to the data */
+    } else {
+        goto error; //Length not supported
     }
 
-    ptr->length = length;
-    ptr->tag = tag;
-    ptr->value = NULL;
+    //Sanity check of buffer
+    if(dataLength-offset-1 > ptr->length)
+        goto error;
 
+    //Verify the tag length
     if (ptr->length > 0) {
-        //copy value
+        //Alocate and copy data
         ptr->value = (uint8_t *) malloc(ptr->length + 1);
-        if (!ptr->value) {
-            free(ptr);
-            return NULL;
-        }
+        if (ptr->value == NULL) 
+            goto error;        
 
         memset (ptr->value, 0, ptr->length + 1);
         memcpy (ptr->value, &(data[offset]), ptr->length);
         offset += ptr->length;
     }
-
-    //done
     return ptr;
+    
+    error:    
+    free(ptr->value);
+    free(ptr);
+    return NULL;
 }
 
 /****************************************************************************************
