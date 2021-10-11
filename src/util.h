@@ -28,6 +28,10 @@ int file_io_chunk(file_io io, char *path, long offset,
               size_t chunk_size, char *buffer);
 void remove_spaces(const char *input, char *result);
 void remove_char(char *s, char c);
+
+uint32_t convert_hex_to_u32(uint8_t *buf_hex, int size_buf_hex);
+
+
 uint16_t crc16(uint8_t *buffer, size_t len);
 
 #define MSB(x) ((uint8_t) ( x >> 8 ))

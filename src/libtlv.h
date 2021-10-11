@@ -14,7 +14,7 @@ extern "C" {
 /******************************************************
  *                    Constants
  ******************************************************/
-#define STRUCT_NUM_CHILD 10
+#define STRUCT_NUM_CHILD 30
 /******************************************************
  *                   Enumerations
  ******************************************************/
@@ -41,7 +41,8 @@ extern "C" {
 uint32_t ber_tlv_init(bool b_debug);
 uint32_t ber_tlv_terminate(void);
 uint32_t ber_tlv_set(uint8_t * p_value, int32_t i32_size);
-uint32_t ber_tlv_get(uint8_t * resp_str, int32_t *i32_resp_size, uint8_t * p_value, int32_t i32_size);
+uint32_t ber_tlv_get(uint8_t * resp_str, int32_t *i32_resp_size, uint32_t u32_tag);
+uint32_t ber_tlv_pretty(uint8_t * resp_str, int32_t *i32_resp_size, uint32_t u32_tag);
 
 #ifdef __cplusplus
 }

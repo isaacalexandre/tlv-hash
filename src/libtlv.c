@@ -18,6 +18,8 @@
  *                    Constants
  ******************************************************/
 #define BER_TLV_CONSTRUCTED_BIT    0x20
+#define BER_TLV_COMPLEX_TAG_BITS   0x1F
+#define BER_TLV_CLASS_TAG_BITS     0xC0
 /******************************************************
  *                   Enumerations
  ******************************************************/
@@ -26,7 +28,7 @@
  *                 Type Definitions
  ******************************************************/
 typedef void * ber_tlv_t;
-
+typedef void * ber_tlv_constructed_t;
 typedef struct {
     uint32_t   tag;
     uint32_t   length;
@@ -36,7 +38,8 @@ typedef struct {
 typedef struct {
     uint32_t   tag;
     uint16_t   num;//Number of children
-    uint32_t   child_tag[STRUCT_NUM_CHILD];
+    uint32_t   p_child_tag[STRUCT_NUM_CHILD];
+    uint32_t   length;
 } ber_tlv_constructed_object_t;
 /******************************************************
  *                    Structures
@@ -55,26 +58,31 @@ bool b_debug_enabled = false;
 /******************************************************
  *               Function Definitions
  ******************************************************/
+//Serial func
+uint32_t ber_tlv_serialize(uint32_t tag, uint8_t *output, uint32_t *outputLength);
+uint32_t ber_tlv_serialize_constructed(uint32_t tag, uint8_t *output, uint32_t *outputLength);
+uint32_t ber_tlv_serialize_primitive(uint32_t tag, uint8_t *output, uint32_t *outputLength);
+uint32_t ber_tlv_serialize_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength);
+uint32_t ber_tlv_serialize_constructed_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength, uint32_t* offset_printf);
+uint32_t ber_tlv_serialize_primitive_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength, uint32_t* offset_printf);
+//Tools
+bool ber_tlv_is_constructed(uint32_t tag);
+uint32_t ber_tlv_get_num_bytes_tag(uint32_t tag);
+uint32_t ber_tlv_get_num_bytes_length(uint32_t len);
+uint8_t* ber_tlv_get_type(uint32_t tag);
+uint8_t* ber_tlv_get_class(uint32_t tag);
+uint32_t ber_tlv_tab_increment_pretty(uint32_t num_tab, uint8_t* str);
+//TLV Tools
 ber_tlv_t ber_tlv_create_object(void);
-ber_tlv_t ber_tlv_parse(uint8_t *data, uint32_t dataLength);
-
-bool ber_tlv_add_data(ber_tlv_t tlv, uint8_t *data, uint32_t dataLength);
-bool ber_tlv_add_TLV(ber_tlv_t tlv, ber_tlv_t tlvToAdd);
-
-bool ber_tlv_set_tag(ber_tlv_t tlv, uint32_t tag);
-bool ber_tlv_serialize(ber_tlv_t tlv, uint8_t *output, uint32_t *outputLength);
-
-uint32_t ber_tlv_get_tag(ber_tlv_t tlv);
-uint32_t ber_tlv_get_length(ber_tlv_t tlv);
-uint8_t *ber_tlv_get_value(ber_tlv_t tlv);
-
+ber_tlv_t ber_tlv_parse(uint8_t *data, uint32_t dataLength, uint32_t *bytes_parsed);
 void ber_tlv_delete_value(ber_tlv_t tlv);
 void ber_tlv_delete_object(ber_tlv_t tlv);
-
-bool ber_tlv_is_constructed(ber_tlv_t tlv);
 void ber_tlv_update_value(ber_tlv_t tlv, uint8_t *data, uint32_t data_len);
-
-uint32_t ber_tlv_push_to_list(ber_tlv_t tlv);
+//List Func
+uint32_t ber_tlv_push_to_list_primitive(ber_tlv_t tlv);
+uint32_t ber_tlv_push_to_list_constructed(ber_tlv_t tlv);
+ber_tlv_t ber_tlv_get_from_list_primitive(uint32_t tag);
+ber_tlv_constructed_t ber_tlv_get_from_list_constructed(uint32_t tag);
 /******************************************************
  *               Interface functions
  ******************************************************/
@@ -92,7 +100,9 @@ uint32_t ber_tlv_init(bool b_debug)
     //Initialize thes lists and the debug
     tags_primitive = llist_create(NULL);
     tags_constructed = llist_create(NULL); 
+    
     b_debug_enabled = b_debug;
+
     if(tags_constructed == NULL || tags_primitive == NULL)
         return -1;
     else
@@ -109,6 +119,26 @@ uint32_t ber_tlv_init(bool b_debug)
  ***************************************************************************************/
 uint32_t ber_tlv_terminate(void)
 {
+    //Clear the lists and free tlvs
+    ber_tlv_object_t* ptlv_obj = NULL;
+
+    //Clear list primitives
+    struct node *ptr = *tags_primitive;
+    while (ptr != NULL) { //Find in the list the tag
+        ptlv_obj = (ber_tlv_object_t*)(ptr->data);
+        ptr = ptr->next;
+        ber_tlv_delete_object(ptlv_obj);
+    }
+    //Clear Constructed
+    ptr= *tags_constructed;
+    while (ptr != NULL) { //Find in the list the tag
+        free(ptr->data);
+        ptr = ptr->next;        
+    }
+    //Free lists
+    llist_free(tags_primitive);
+    llist_free(tags_constructed);
+
     return 0;
 }
 
@@ -121,23 +151,32 @@ uint32_t ber_tlv_terminate(void)
  *
  ***************************************************************************************/
 uint32_t ber_tlv_set(uint8_t * p_value, int32_t i32_size)
-{    
-    //Allocate in memory the object
-    ber_tlv_t* ptlv = ber_tlv_parse(p_value, i32_size);   
+{       
+    uint32_t bytes_parsed;
+    ber_tlv_t* ptlv = ber_tlv_parse(p_value, i32_size,&bytes_parsed);   //Allocate in memory the object
     ber_tlv_object_t* ptlv_obj = (ber_tlv_object_t*)ptlv;  
-
+    
+    //Sanity
     if(ptlv == NULL || ptlv_obj == NULL)
+        goto error;
+    //Verify if all byte was parsed
+    if(bytes_parsed != (uint32_t)i32_size)
         goto error;
 
     if(b_debug_enabled) {
-        printf("TAG:%02X LEN:%d DATA: ",ptlv_obj->tag ,ptlv_obj->length);
+        printf("\nTAG:%02X LEN:%d DATA: ",ptlv_obj->tag ,ptlv_obj->length);
         for(uint32_t i=0; i < ptlv_obj->length; i++)
             printf("%02X ",ptlv_obj->value[i]);
     }
     
-    if(ber_tlv_is_constructed(ptlv)) {
-        printf("TESTE");
-    }
+    //Verify if the TLV is construted 
+    if(ber_tlv_is_constructed(ptlv_obj->tag))
+        ber_tlv_push_to_list_constructed(ptlv);
+    else         
+        ber_tlv_push_to_list_primitive(ptlv); //Just store the TLV
+
+    //Delete the object received
+    ber_tlv_delete_object(ptlv); 
 
     return 0;
 
@@ -154,15 +193,40 @@ uint32_t ber_tlv_set(uint8_t * p_value, int32_t i32_size)
  * \return
  *
  ***************************************************************************************/
-uint32_t ber_tlv_get(uint8_t * resp_str, int32_t *i32_resp_size, uint8_t * p_value, int32_t i32_size)
+uint32_t ber_tlv_get(uint8_t * resp_str, int32_t *i32_resp_size, uint32_t u32_tag)
 {
-    UNUSED(resp_str);
-    UNUSED(i32_resp_size);
-    UNUSED(p_value);
-    UNUSED(i32_size);
-    return 0;
-}
+    if(b_debug_enabled) {
+        printf("\n\nTAG PRIMITIVES");
+        ber_tlv_object_t* ptlv_obj = NULL;
+        struct node *curr = *tags_primitive;
+        while (curr != NULL) { //Find in the list the tag
+            ptlv_obj = (ber_tlv_object_t*)(curr->data);
+            curr = curr->next;
+            if(b_debug_enabled) {
+                printf("\nTAG:%02X LEN:%d DATA: ",ptlv_obj->tag ,ptlv_obj->length);
+                for(uint32_t i=0; i < ptlv_obj->length; i++)
+                    printf("%02X ",ptlv_obj->value[i]);
+            }
+        }
 
+        printf("\n\nTAG CONSTRUCTED");
+        ber_tlv_constructed_object_t* ptlv_const = NULL;
+        struct node *curr2 = *tags_constructed;
+        while (curr2 != NULL) { //Find in the list the tag
+            if(curr2->data == NULL)
+                break;
+            ptlv_const = (ber_tlv_constructed_object_t*)(curr2->data);
+            curr2 = curr2->next;
+            if(b_debug_enabled) {
+                printf("\nTAG:%02X LEN:%d ",ptlv_const->tag ,ptlv_const->length);
+                for(uint32_t i=0; i < ptlv_const->num; i++)
+                    printf("TAG%d:%02X ",i,ptlv_const->p_child_tag[i]);
+            }
+        }  
+         printf("\n\n");
+    } 
+    return ber_tlv_serialize(u32_tag, resp_str, (uint32_t*)i32_resp_size);
+}
 
 /****************************************************************************************
  * \brief
@@ -172,11 +236,147 @@ uint32_t ber_tlv_get(uint8_t * resp_str, int32_t *i32_resp_size, uint8_t * p_val
  * \return
  *
  ***************************************************************************************/
-uint32_t ber_tlv_push_to_list(ber_tlv_t tlv)
+uint32_t ber_tlv_pretty(uint8_t * resp_str, int32_t *i32_resp_size, uint32_t u32_tag)
 {
-    UNUSED(tlv);
+    return ber_tlv_serialize_pretty(u32_tag, resp_str, (uint32_t*)i32_resp_size);
+}
+
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint32_t ber_tlv_push_to_list_primitive(ber_tlv_t tlv)
+{
+    ber_tlv_object_t* ptlv_obj = (ber_tlv_object_t*)tlv;
+    ber_tlv_t aux_tlv = NULL;
+    //Verify if already existe the tag
+    aux_tlv = ber_tlv_get_from_list_primitive(ptlv_obj->tag); 
+    if(aux_tlv == NULL) {
+        //Push to TLV Primitive List
+        llist_push(tags_primitive, (void*)tlv);
+    } else {
+        //Update the value tag
+        ber_tlv_update_value(aux_tlv, ptlv_obj->value, ptlv_obj->length);
+        ber_tlv_delete_object(ptlv_obj);
+    }
+    return 0;
+}
+
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+ber_tlv_t ber_tlv_get_from_list_primitive(uint32_t tag)
+{
+    ber_tlv_object_t* ptlv_obj = NULL;
+    struct node *curr = *tags_primitive;
+    while (curr != NULL) { //Find in the list the tag
+        if(curr->data == NULL)
+            break;
+        ptlv_obj = (ber_tlv_object_t*)(curr->data);
+        curr = curr->next;
+        
+        if(ptlv_obj->tag == tag)
+            return ((ber_tlv_t)ptlv_obj);
+    }
+    //Not able to find
+    return NULL;
+}
+
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint32_t ber_tlv_push_to_list_constructed(ber_tlv_t tlv)
+{   
+    uint32_t u32_len_stored = 0;
+    uint32_t u32_bytes_parsed = 0;
+    //Aux pointer to storage
+    ber_tlv_t p_aux_tlv = NULL;
+    ber_tlv_object_t* p_aux_obj_tlv = NULL;
+    //Alloc the construct info
+    ber_tlv_constructed_object_t* p_tlc_contructed = (ber_tlv_constructed_object_t *) malloc(sizeof(ber_tlv_constructed_object_t));
+    ber_tlv_object_t* p_obj_tlv = (ber_tlv_object_t*)tlv;
+    //Copy information
+    p_tlc_contructed->length = p_obj_tlv->length;
+    p_tlc_contructed->tag = p_obj_tlv->tag;
+    p_tlc_contructed->num = 0;    
+
+    //Store all information inside the TLV
+    do{
+        //Get node by node in the TLV
+        p_aux_tlv = ber_tlv_parse(&p_obj_tlv->value[u32_len_stored], p_obj_tlv->length, &u32_bytes_parsed); //Allocate in memory the object
+        p_aux_obj_tlv = (ber_tlv_object_t*)p_aux_tlv;
+
+        if(p_aux_tlv == NULL)
+            goto error;
+
+        //Debug        
+        if(b_debug_enabled) {
+            printf("\nTAG:%02X LEN:%d DATA: ",p_aux_obj_tlv->tag ,p_aux_obj_tlv->length);
+            for(uint32_t i=0; i < p_aux_obj_tlv->length; i++)
+                printf("%02X ",p_aux_obj_tlv->value[i]);
+        }
+
+        //Verify if is constructed TLV
+        if(ber_tlv_is_constructed(p_aux_obj_tlv->tag)) {
+            ber_tlv_push_to_list_constructed(p_aux_tlv); //Recursive function
+        } else {
+            //Push to the list if is primitive
+            ber_tlv_push_to_list_primitive(p_aux_tlv);
+        }
+
+        //Store the tag into constructed struct and increment num_of_tags
+        p_tlc_contructed->p_child_tag[p_tlc_contructed->num++] = p_aux_obj_tlv->tag;
+        //Increment the offset
+        u32_len_stored += u32_bytes_parsed;
+
+    }while(u32_len_stored < p_tlc_contructed->length);
+
+    //Push to TLV Constructed List
+    llist_push(tags_constructed,(void*)p_tlc_contructed);
     return 0;
 
+    error:
+    ber_tlv_delete_object(p_aux_tlv);
+    return -1;
+}
+
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+ber_tlv_constructed_t ber_tlv_get_from_list_constructed(uint32_t tag)
+{
+    ber_tlv_constructed_object_t* ptlv_obj = NULL;
+    struct node *curr = *tags_constructed;
+    while (curr != NULL) { //Find in the list the tag
+        if(curr->data == NULL)
+            break;
+        ptlv_obj = (ber_tlv_constructed_object_t*)(curr->data);
+        curr = curr->next;
+        
+        if(ptlv_obj->tag == tag)
+            return ((ber_tlv_constructed_t)ptlv_obj);
+    }
+    //Not able to find
+    return NULL;
 }
 
 /****************************************************************************************
@@ -197,7 +397,7 @@ ber_tlv_t ber_tlv_create_object(void)
         return NULL;
     }
 
-    //initialize
+    //Initialize
     ptr->length = 0;
     ptr->tag = 0;
     ptr->value = NULL;
@@ -214,142 +414,17 @@ ber_tlv_t ber_tlv_create_object(void)
  * \return
  *
  ***************************************************************************************/
-bool ber_tlv_add_data(ber_tlv_t tlv, uint8_t *data, uint32_t dataLength)
-{
-    ber_tlv_object_t *ptrTLV = NULL;
-    uint32_t newLength = 0;
-    uint8_t *newData = NULL;
-
-    //sanity checks
-    if (!tlv) {
-        return false;
-    }
-    if (!data) {
-        return false;
-    }
-    if (dataLength < 1) {
-        return false;
-    }
-
-    //grab pointer
-    ptrTLV = (ber_tlv_object_t *) tlv;
-
-    //evaluate new length
-    newLength = ptrTLV->length + dataLength;
-
-    //allocate more memory
-    newData = (uint8_t *) malloc (newLength + 1); //this +1 is to facilitate debugging
-
-    if (!newData) {
-        return false;                                   //original TLV has not been changed
-
-    }
-    memset(newData, 0, newLength + 1); //this +1 is for character null
-
-    //copy old data
-    if (ptrTLV->length > 0) {
-        memcpy(newData, ptrTLV->value, ptrTLV->length);
-    }
-
-    //copy new data
-    memcpy(&(newData[ptrTLV->length]), data, dataLength);
-
-    //free old data
-    free(ptrTLV->value);
-
-    //adjust pointer
-    ptrTLV->value = newData;
-    ptrTLV->length = newLength;
-
-    //done
-    return true;
-}
-
-/****************************************************************************************
- * \brief
- *
- * \param
- *
- * \return
- *
- ***************************************************************************************/
-bool ber_tlv_add_TLV(ber_tlv_t tlv, ber_tlv_t tlvToAdd)
-{
-    ber_tlv_object_t *ptrTLV = NULL;
-
-    uint32_t serializedLength = 0;
-    uint32_t newLength = 0;
-    uint8_t *newData = NULL;
-
-    //sanity checks
-    if (!tlv) {
-        return false;
-    }
-    if (!tlvToAdd) {
-        return false;
-    }
-
-    //grab pointer
-    ptrTLV = (ber_tlv_object_t *) tlv;
-
-    //lets check how much room the other TLV requires
-    if (!ber_tlv_serialize (tlvToAdd, NULL, &serializedLength)) {
-        return false;
-    }
-
-    //evaluate new length
-    newLength = ptrTLV->length + serializedLength;
-
-    //allocate more memory
-    newData = (uint8_t *) malloc (newLength + 1); //this +1 is to add a character null to facilitate debugging
-
-    if (!newData) {
-        return false;                                   //original TLV has not been changed
-
-    }
-    memset(newData, 0, newLength + 1); //this +1 is for character null
-
-    //copy old data
-    if (ptrTLV->length > 0) {
-        memcpy(newData, ptrTLV->value, ptrTLV->length);
-    }
-
-    //serialize TLV
-    if (!ber_tlv_serialize (tlvToAdd, &(newData[ptrTLV->length]), &serializedLength)) {
-        free (newData);
-        return false;
-    }
-
-    //free old data
-    free (ptrTLV->value);
-
-    //adjust pointer
-    ptrTLV->value = newData;
-    ptrTLV->length = newLength;
-
-    //done
-    return true;
-}
-
-/****************************************************************************************
- * \brief
- *
- * \param
- *
- * \return
- *
- ***************************************************************************************/
 void ber_tlv_update_value(ber_tlv_t tlv, uint8_t *data, uint32_t data_len)
 {
     ber_tlv_object_t *ptr = NULL;
     uint32_t copy_len = 0;
 
-    //sanity check
+    //Sanity check
     if (!tlv || !data || !data_len) {
         return;
     }
 
-    //grab pointer
+    //Grab pointer
     ptr = (ber_tlv_object_t *) tlv;
 
     if (data_len > ptr->length)
@@ -359,7 +434,6 @@ void ber_tlv_update_value(ber_tlv_t tlv, uint8_t *data, uint32_t data_len)
 
     memcpy(ptr->value, data, copy_len);
 
-    //done
     return;
 }
 
@@ -375,21 +449,19 @@ void ber_tlv_delete_value(ber_tlv_t tlv)
 {
     ber_tlv_object_t *ptr = NULL;
 
-    //sanity check
-    if (!tlv) {
+    //Sanity check
+    if (!tlv) 
         return;
-    }
-
-    //grab pointer
+    
+    //Grab pointer
     ptr = (ber_tlv_object_t *) tlv;
 
-    //free memory
+    //Free memory
     if (ptr->value) {
         free(ptr->value);
         ptr->length = 0;
     }
 
-    //done
     return;
 }
 
@@ -403,18 +475,15 @@ void ber_tlv_delete_value(ber_tlv_t tlv)
  ***************************************************************************************/
 void ber_tlv_delete_object(ber_tlv_t tlv)
 {
-    //sanity check
-    if (!tlv) {
-        return;
-    }
+    //Sanity check
+    if (!tlv) 
+        return;    
 
-    //delete value
+    //Delete value
     ber_tlv_delete_value(tlv);
 
-    //free memory
+    //Free memory
     free(tlv);
-
-    //done
     return;
 }
 
@@ -426,23 +495,16 @@ void ber_tlv_delete_object(ber_tlv_t tlv)
  * \return
  *
  ***************************************************************************************/
-uint32_t ber_tlv_get_tag(ber_tlv_t tlv)
+uint32_t ber_tlv_serialize(uint32_t tag, uint8_t *output, uint32_t *outputLength)
 {
-    ber_tlv_object_t *ptr = NULL;
-
-    //sanity check
-    if (!tlv) {
-        return 0;
-    }
-
-    //grab pointer
-    ptr = (ber_tlv_object_t *) tlv;
-
-    //return the tag -- turn OFF the constructed bit
-    //return (ptr->tag & (~BER_TLV_CONSTRUCTED_BIT));
-
-    //don't turn off the constructed bit!
-    return ptr->tag;
+    uint32_t ret = 0;
+    //Verify if is constructed
+    if (ber_tlv_is_constructed(tag))
+        ret = ber_tlv_serialize_constructed(tag, output, outputLength);
+    else 
+        ret = ber_tlv_serialize_primitive(tag, output, outputLength);
+    
+    return ret;
 }
 
 /****************************************************************************************
@@ -453,69 +515,61 @@ uint32_t ber_tlv_get_tag(ber_tlv_t tlv)
  * \return
  *
  ***************************************************************************************/
-bool ber_tlv_set_tag(ber_tlv_t tlv, uint32_t tag)
+uint32_t ber_tlv_serialize_primitive(uint32_t tag, uint8_t *output, uint32_t *outputLength)
 {
-    const uint8_t CHECK_MSB = 0x80;
-    const uint8_t CHECK_PATTERN = 0x1F;
-    const uint8_t CHECK_ZERO = 0x00;
-    ber_tlv_object_t *ptr = NULL;
-    uint8_t buffer[4];
+    uint32_t offset = 0;
+    uint32_t bytes_offset = 0;
+    uint32_t length_offset = 0;
 
-    //sanity check
-    if (!tlv) {
-        return false;
+    //Get from the list the primitive
+    ber_tlv_object_t* p_tlv = ber_tlv_get_from_list_primitive(tag);
+    if (p_tlv == NULL)
+        goto error;
+
+    // Verify if fits the tag
+    if (p_tlv->length + 8 >  *outputLength)
+        goto error;
+
+    //Parse the buffer    
+    bytes_offset = ber_tlv_get_num_bytes_tag(p_tlv->tag);
+    if (bytes_offset == 0)
+        goto error;
+    else
+        bytes_offset--; //To fit in the algoritm bellow
+    //Parse tag
+    for (int16_t i = bytes_offset; i >= 0; i--)
+        output[offset++] =  (uint8_t)((uint32_t)(p_tlv->tag >> (i*8))& 0xFF); //Put in the buffer the appropriate tag
+
+    //Parse length
+    length_offset = ber_tlv_get_num_bytes_length(p_tlv->length);
+    //Verify the length
+    if(length_offset == 0)
+        goto error;
+    //Need put one extra by before the length
+    if (length_offset > 1)
+        output[offset++] = (uint8_t)(0x80 | (length_offset-1));
+    //Normalize the length
+    length_offset--;
+    //Populate the array
+    for (int16_t i = length_offset; i >= 0; i--)
+        output[offset++] =  (uint8_t)((uint32_t)(p_tlv->length >> (i*8))& 0xFF); 
+
+    //Verify the tag length and copy data
+    if (p_tlv->length > 0) {
+        //Alocate and copy data
+        memset (&output[offset], 0, p_tlv->length);
+        memcpy (&output[offset], p_tlv->value, p_tlv->length);
+        offset += p_tlv->length;
     }
 
-    //grab pointer
-    ptr = (ber_tlv_object_t *) tlv;
-
-    //sanity check on tag value - must be valid
-    buffer[0] = ISOLATE_BYTE3(tag);
-    buffer[1] = ISOLATE_BYTE2(tag);
-    buffer[2] = ISOLATE_BYTE1(tag);
-    buffer[3] = ISOLATE_BYTE0(tag);
-
-    if (buffer[0] != CHECK_ZERO) {
-        if ((buffer[0] & CHECK_PATTERN) != CHECK_PATTERN) {
-            return false;                         //first byte must be xxx11111
-        }
-        if ((buffer[1] & CHECK_MSB) != CHECK_MSB) {
-            return false;                         //second byte must be 1xxxxxxx
-        }
-        if ((buffer[2] & CHECK_MSB) != CHECK_MSB) {
-            return false;                         //third byte must be 1xxxxxxx
-        }
-        if ((buffer[3] & CHECK_MSB) != CHECK_ZERO) {
-            return false;                         //last byte must be 0xxxxxxx
-        }
-    } else if (buffer[1] != CHECK_ZERO) {
-        if ((buffer[1] & CHECK_PATTERN) != CHECK_PATTERN) {
-            return false;                         //first byte must be xxx11111
-        }
-        if ((buffer[2] & CHECK_MSB) != CHECK_MSB) {
-            return false;                         //second byte must be 1xxxxxxx
-        }
-        if ((buffer[3] & CHECK_MSB) != CHECK_ZERO) {
-            return false;                         //last byte must be 0xxxxxxx
-        }
-    } else if (buffer[2] != CHECK_ZERO) {
-        if ((buffer[2] & CHECK_PATTERN) != CHECK_PATTERN) {
-            return false;                         //first byte must be xxx11111
-        }
-        if ((buffer[3] & CHECK_MSB) != CHECK_ZERO) {
-            return false;                         //last byte must be 0xxxxxxx
-        }
-    } else
-    if ((buffer[3] & CHECK_PATTERN) == CHECK_PATTERN) {
-        return false;                             //first byte cannot be xxx11111
-
-
+    //Update the length parsed
+    if (outputLength) {
+        *outputLength = offset;
     }
-    //set tag
-    ptr->tag = tag;
+    return 0;
 
-    //done
-    return true;
+    error:
+    return -1;
 }
 
 /****************************************************************************************
@@ -526,125 +580,208 @@ bool ber_tlv_set_tag(ber_tlv_t tlv, uint32_t tag)
  * \return
  *
  ***************************************************************************************/
-bool ber_tlv_serialize(ber_tlv_t tlv, uint8_t *output, uint32_t *outputLength)
+uint32_t ber_tlv_serialize_constructed(uint32_t tag, uint8_t *output, uint32_t *outputLength)
 {
-    ber_tlv_object_t *ptr = NULL;
-    uint32_t bytesNeeded = 0;
-    uint8_t buffer[4];
+    uint32_t offset = 0;
+    uint32_t bytes_offset = 0;
+    uint32_t length_offset = 0;
+    uint32_t ret = 0;
+    uint32_t aux_output_length = 0;
+    //Sanity
+    if(outputLength == NULL)
+        goto error;
+
+    //Get the struct constructed
+    ber_tlv_constructed_object_t* p_constrc =  ber_tlv_get_from_list_constructed(tag);
+    if(p_constrc == NULL) 
+        goto error;
+
+    //Verify if fits
+    if(p_constrc->length + 8 > *outputLength)
+        goto error;
+
+    //Parse the buffer    
+    bytes_offset = ber_tlv_get_num_bytes_tag(p_constrc->tag);
+    if (bytes_offset == 0)
+        goto error;
+    else
+        bytes_offset--; //To fit in the algoritm bellow
+
+    //Parse tag
+    for (int16_t i = bytes_offset; i >= 0; i--)
+        output[offset++] =  (uint8_t)((uint32_t)(p_constrc->tag >> (i*8))& 0xFF); //Put in the buffer the appropriate tag
+
+    //Parse length
+    length_offset = ber_tlv_get_num_bytes_length(p_constrc->length);
+    //Verify the length
+    if(length_offset == 0)
+        goto error;
+    //Need put one extra by before the length
+    if (length_offset > 1)
+        output[offset++] = (uint8_t)(0x80 | (length_offset-1));        
+    //Normalize the length
+    length_offset--;
+    
+    //Populate the array
+    for (int16_t i = length_offset; i >= 0; i--)
+        output[offset++] =  (uint8_t)((uint32_t)(p_constrc->length >> (i*8))& 0xFF); 
+
+    //Populate with primitive and constructs
+    for(uint16_t i =0; i < p_constrc->num; i++) {        
+        //Calculate how many bytes remains
+        aux_output_length = *outputLength - offset;
+        //Verify if is constructed
+        if(ber_tlv_is_constructed(p_constrc->p_child_tag[i]))
+            ret = ber_tlv_serialize_constructed(p_constrc->p_child_tag[i], &output[offset], &aux_output_length);//Recursive function
+        else
+            ret = ber_tlv_serialize_primitive(p_constrc->p_child_tag[i], &output[offset], &aux_output_length);
+        //Verify if parse rigth
+        if(ret)
+            goto error;
+        //Sum number of the bytes parsed
+        offset += aux_output_length;
+    }
+    //Update the length
+    *outputLength = offset;
+    return ret;
+
+    error:
+    return -1;
+}
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint32_t ber_tlv_serialize_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength)
+{
+    uint32_t ret = 0;
+    uint32_t offset_print = 0;
+    //Clear the buffer
+    memset(output, 0x00, *outputLength);
+    //Verify if is constructed
+    if (ber_tlv_is_constructed(tag))
+        ret = ber_tlv_serialize_constructed_pretty(tag, output, outputLength, &offset_print);
+    else 
+        ret = ber_tlv_serialize_primitive_pretty(tag, output, outputLength, &offset_print);
+    
+    return ret;
+}
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint32_t ber_tlv_serialize_constructed_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength, uint32_t* offset_printf)
+{
+    uint32_t offset = 0;
+    uint32_t ret = 0;
+    uint32_t aux_output_length = 0;
+    //Sanity
+    if(outputLength == NULL)
+        goto error;
+
+    //Get the struct constructed
+    ber_tlv_constructed_object_t* p_constrc =  ber_tlv_get_from_list_constructed(tag);
+    if(p_constrc == NULL) 
+        goto error;
+   
+    //Populate the output with pretty string
+    offset += ber_tlv_tab_increment_pretty(*offset_printf, &output[offset]);
+    sprintf((void *)&output[offset],"TAG – 0x%02X (%s,%s)\r\n", p_constrc->tag, ber_tlv_get_class(p_constrc->tag), ber_tlv_get_type(p_constrc->tag));
+    offset = strlen((const char *)output);
+    
+    offset += ber_tlv_tab_increment_pretty(*offset_printf, &output[offset]);
+    sprintf((void *)&output[offset],"LEN – %d \r\n", p_constrc->length);
+    offset = strlen((const char *)output);
+
+    //Increment the offset
+    *offset_printf += 1;
+    //Populate with primitive and constructs
+    for(uint16_t i =0; i < p_constrc->num; i++) {        
+        //Calculate how many bytes remains
+        aux_output_length = *outputLength - offset;
+        //Verify if is constructed
+        if(ber_tlv_is_constructed(p_constrc->p_child_tag[i]))
+            ret = ber_tlv_serialize_constructed_pretty(p_constrc->p_child_tag[i], &output[offset], &aux_output_length, offset_printf);//Recursive function
+        else
+            ret = ber_tlv_serialize_primitive_pretty(p_constrc->p_child_tag[i], &output[offset], &aux_output_length, offset_printf);
+        //Verify if parse rigth
+        if(ret)
+            goto error;
+        //Refresh the strng len
+        offset = strlen((const char *)output);
+    }
+    //Decrement the offset
+    *offset_printf -= 1;
+
+    //Update the length
+    *outputLength = offset;
+    return ret;
+
+    error:
+    return -1;
+}
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint32_t ber_tlv_serialize_primitive_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength, uint32_t* offset_printf)
+{
     uint32_t offset = 0;
 
-    //sanity check
-    if (!tlv) {
-        return false;
+    //Get from the list the primitive
+    ber_tlv_object_t* p_tlv = ber_tlv_get_from_list_primitive(tag);
+    if (p_tlv == NULL)
+        goto error;
+
+    // Verify if fits the tag
+    if (p_tlv->length + 8 >  *outputLength)
+        goto error;
+
+    //Populate the output with pretty string
+    offset += ber_tlv_tab_increment_pretty(*offset_printf, &output[offset]);
+    sprintf((void *)&output[offset],"TAG – 0x%02X (%s,%s)\r\n", p_tlv->tag, ber_tlv_get_class(p_tlv->tag), ber_tlv_get_type(p_tlv->tag));
+    offset = strlen((const char *)output);
+    
+    offset += ber_tlv_tab_increment_pretty(*offset_printf, &output[offset]);
+    sprintf((void *)&output[offset],"LEN – %d \r\n", p_tlv->length);
+    offset = strlen((const char *)output);
+    
+    offset += ber_tlv_tab_increment_pretty(*offset_printf, &output[offset]);
+    sprintf((void *)&output[offset],"VAL – ");
+    offset = strlen((const char *)output);
+    
+    //Verify the tag length and copy data
+    if (p_tlv->length > 0) {
+        for (uint16_t i = 0; i < p_tlv->length; i++) {
+            sprintf((void *)&output[offset],"0x%02X ",p_tlv->value[i]);
+            offset+=5;
+        }
     }
-    if (!outputLength) {
-        return false;
+    //Empty line
+    sprintf((void *)&output[offset],"\r\n\r\n");
+    offset = strlen((const char *)output);
+   
+    //Update the length parsed
+    if (outputLength) {
+        *outputLength = offset;
     }
+    return 0;
 
-    //grab pointer
-    ptr = (ber_tlv_object_t *) tlv;
-
-    //lets count how many bytes we need
-    //how many bytes for the tag?
-    if ((ptr->tag & 0xFF000000) != 0) {
-        bytesNeeded += 4;
-    } else if ((ptr->tag & 0x00FF0000) != 0) {
-        bytesNeeded += 3;
-    } else if ((ptr->tag & 0x0000FF00) != 0) {
-        bytesNeeded += 2;
-    } else {
-        bytesNeeded += 1; //tag takes at least 1 byte
-    }
-    //how many bytes for the length?
-    if (ptr->length <= 127) {
-        bytesNeeded += 1;
-    } else if (ptr->length <= 0xFF) {
-        bytesNeeded += 2;
-    } else if (ptr->length <= 0xFFFF) {
-        bytesNeeded += 3;
-    } else if (ptr->length <= 0xFFFFFF) {
-        bytesNeeded += 4;
-    } else {
-        bytesNeeded += 5;
-    }
-
-    //how many bytes for the value?
-    bytesNeeded += ptr->length;
-
-    //check if caller just wanted to know the length
-    if (!output) {
-        *outputLength = bytesNeeded;
-        return true;
-    }
-
-    //check if we have enough room
-    if (bytesNeeded > (*outputLength)) {
-        return false;
-    }
-
-    //serialize BER-TLV
-
-    //serialize tag
-    buffer[0] = ISOLATE_BYTE3(ptr->tag);
-    buffer[1] = ISOLATE_BYTE2(ptr->tag);
-    buffer[2] = ISOLATE_BYTE1(ptr->tag);
-    buffer[3] = ISOLATE_BYTE0(ptr->tag);
-
-    if (buffer[0] != 0) {
-        output[offset++] = buffer[0];
-        output[offset++] = buffer[1];
-        output[offset++] = buffer[2];
-        output[offset++] = buffer[3];
-    } else if (buffer[1] != 0) {
-        output[offset++] = buffer[1];
-        output[offset++] = buffer[2];
-        output[offset++] = buffer[3];
-    } else if (buffer[2] != 0) {
-        output[offset++] = buffer[2];
-        output[offset++] = buffer[3];
-    } else {
-        output[offset++] = buffer[3];
-    }
-
-    //serialize length
-    if (ptr->length <= 127) {
-        output[offset++] = ISOLATE_BYTE0(ptr->length);
-    } else if (ptr->length <= 0xFF) {
-        output[offset++] = 0x81; //1 bytes
-
-        output[offset++] = ISOLATE_BYTE0(ptr->length);
-    } else if (ptr->length <= 0xFFFF) {
-        output[offset++] = 0x82; //2 bytes
-
-        output[offset++] = ISOLATE_BYTE1(ptr->length);
-        output[offset++] = ISOLATE_BYTE0(ptr->length);
-    } else if (ptr->length <= 0xFFFFFF) {
-        output[offset++] = 0x83; //3 bytes
-
-        output[offset++] = ISOLATE_BYTE2(ptr->length);
-        output[offset++] = ISOLATE_BYTE1(ptr->length);
-        output[offset++] = ISOLATE_BYTE0(ptr->length);
-    } else {
-        output[offset++] = 0x84; //4 bytes
-
-        output[offset++] = ISOLATE_BYTE3(ptr->length);
-        output[offset++] = ISOLATE_BYTE2(ptr->length);
-        output[offset++] = ISOLATE_BYTE1(ptr->length);
-        output[offset++] = ISOLATE_BYTE0(ptr->length);
-
-
-    }
-
-    //serialize value
-    memcpy (&(output[offset]), ptr->value, ptr->length);
-
-    //update length
-    *outputLength = bytesNeeded;
-
-    //done
-    return true;
+    error:
+    return -1;
 }
-
 /****************************************************************************************
  * \brief
  *
@@ -653,59 +790,12 @@ bool ber_tlv_serialize(ber_tlv_t tlv, uint8_t *output, uint32_t *outputLength)
  * \return
  *
  ***************************************************************************************/
-uint32_t ber_tlv_get_length(ber_tlv_t tlv)
-{
-    ber_tlv_object_t *ptr = NULL;
-
-    //sanity check
-    if (!tlv) {
-        return 0;
-    }
-
-    //grab pointer
-    ptr = (ber_tlv_object_t *) tlv;
-
-    //return the length
-    return ptr->length;
-}
-
-/****************************************************************************************
- * \brief
- *
- * \param
- *
- * \return
- *
- ***************************************************************************************/
-uint8_t *ber_tlv_get_value(ber_tlv_t tlv)
-{
-    ber_tlv_object_t *ptr = NULL;
-
-    //sanity check
-    if (!tlv) {
-        return NULL;
-    }
-
-    //grab pointer
-    ptr = (ber_tlv_object_t *) tlv;
-
-    //return the value
-    return ptr->value;
-}
-
-/****************************************************************************************
- * \brief
- *
- * \param
- *
- * \return
- *
- ***************************************************************************************/
-ber_tlv_t ber_tlv_parse(uint8_t *data, uint32_t dataLength)
+ber_tlv_t ber_tlv_parse(uint8_t *data, uint32_t dataLength, uint32_t *bytes_parsed)
 {
     ber_tlv_object_t *ptr = NULL;
     uint32_t offset = 0;
     uint16_t u16_count_len = 0;
+    UNUSED(dataLength);
 
     //Sanity checks
     if (!data) 
@@ -742,10 +832,6 @@ ber_tlv_t ber_tlv_parse(uint8_t *data, uint32_t dataLength)
         goto error; //Length not supported
     }
 
-    //Sanity check of buffer
-    if(dataLength-offset-1 > ptr->length)
-        goto error;
-
     //Verify the tag length
     if (ptr->length > 0) {
         //Alocate and copy data
@@ -757,6 +843,12 @@ ber_tlv_t ber_tlv_parse(uint8_t *data, uint32_t dataLength)
         memcpy (ptr->value, &(data[offset]), ptr->length);
         offset += ptr->length;
     }
+    
+    //Update how many bytes actually parsed
+    if (bytes_parsed) {
+        *bytes_parsed = offset;
+    }
+
     return ptr;
     
     error:    
@@ -773,22 +865,130 @@ ber_tlv_t ber_tlv_parse(uint8_t *data, uint32_t dataLength)
  * \return
  *
  ***************************************************************************************/
-bool ber_tlv_is_constructed(ber_tlv_t tlv)
+bool ber_tlv_is_constructed(uint32_t tag)
 {
-    ber_tlv_object_t *ptr = NULL;
-
-    //sanity check
-    if (!tlv) {
-        return false;
+    //Check if tag has BER_TLV_CONSTRUCTED_BIT set
+    for(int8_t i = 24; i >= 8; i-=8) { //Verify if have more then 1 byte tag
+        if((tag & (BER_TLV_COMPLEX_TAG_BITS << i)) != 0) 
+            return ((tag & (BER_TLV_CONSTRUCTED_BIT << i)) != 0 ? true : false);
     }
 
-    //grab pointer
-    ptr = (ber_tlv_object_t *) tlv;
+    //If have just 1 byte
+    return ((tag & BER_TLV_CONSTRUCTED_BIT) != 0 ? true : false);   
+}
 
-    //check if tag has BER_TLV_CONSTRUCTED_BIT set
-    if ((ptr->tag & BER_TLV_CONSTRUCTED_BIT) != 0) {
-        return true;    //constructed
-    } else {
-        return false;   //primitive
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint32_t ber_tlv_get_num_bytes_length(uint32_t len)
+{
+     uint32_t ret = 0;
+    //Verify how many bytes have length
+    switch(len) {
+        case 0x00 ... 0x7F:
+            ret = 1;
+            break;
+        case 0x80 ... 0x7FFF :
+            ret = 2;
+            break;
+        case 0x8000 ... 0x7FFFFF :
+            ret = 3;
+            break;
+        case 0x800000 ... 0xFFFFFFFF:
+            ret = 4;
+            break;
+        default:
+            ret = 0;
+            break;
+    }   
+    return ret;
+}
+
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint32_t ber_tlv_get_num_bytes_tag(uint32_t tag)
+{
+     uint32_t ret = 1;//By default
+    //Verify how many bytes have tag
+    for(int8_t i = 24; i >= 8; i-=8) { //Verify if have more then 1 byte tag
+        if((tag & (BER_TLV_COMPLEX_TAG_BITS << i)) != 0) 
+            return ((i+8)/8);//Return what byte was find the complex tag bits
     }
+    return ret;
+}
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint8_t* ber_tlv_get_class(uint32_t tag)
+{
+    uint32_t u32_aux = tag;
+    //Check if tag has BER_TLV_CONSTRUCTED_BIT set
+    for(int8_t i = 24; i >= 8; i-=8) { //Verify if have more then 1 byte tag
+        if((tag & (BER_TLV_COMPLEX_TAG_BITS << i)) != 0) {
+            u32_aux = (tag & (BER_TLV_CLASS_TAG_BITS << i));
+            u32_aux >>= i;//Shit to the first byte
+        }            
+    }
+
+    //If have just 1 byte
+    u32_aux = u32_aux & BER_TLV_CLASS_TAG_BITS;
+    u32_aux >>= 6;
+
+    switch(u32_aux) {
+        case 0:
+            return (uint8_t*)"Universal Class\0";
+        case 1:
+            return (uint8_t*)"Application Class\0";
+        case 2:
+            return (uint8_t*)"Constext-specific Class\0";
+        case 3:
+            return (uint8_t*)"Private Class\0";
+        default:
+            return (uint8_t*)"Application Class\0";    
+    }    
+}
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint8_t* ber_tlv_get_type(uint32_t tag)
+{
+    return (ber_tlv_is_constructed(tag) == true ? (uint8_t*)"Constructed\0" : (uint8_t*)"Primitive");
+}
+/****************************************************************************************
+ * \brief
+ *
+ * \param
+ *
+ * \return
+ *
+ ***************************************************************************************/
+uint32_t ber_tlv_tab_increment_pretty(uint32_t num_tab, uint8_t* str)
+{
+    uint32_t offset = 0;
+    for (uint32_t i = 0; i < num_tab; i++) {
+        sprintf((void*)str, "   ");
+        offset += 3;
+    }
+    return offset;
 }

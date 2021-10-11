@@ -221,3 +221,18 @@ uint16_t crc16(uint8_t *buffer, size_t len)
 
     return crc;
 }
+
+
+uint32_t convert_hex_to_u32(uint8_t *buf_hex, int size_buf_hex)
+{
+    uint32_t u32_aux = 0;
+    int16_t i = 0;
+    int16_t count = 0;
+    if (size_buf_hex > 4)
+        return 0;
+
+    for(i = (size_buf_hex-1); i >= 0; i--)
+        u32_aux = (u32_aux | (uint32_t)(buf_hex[count++]<<(i*8) ));
+    return u32_aux;
+}
+
