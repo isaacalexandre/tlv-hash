@@ -9,10 +9,6 @@
 /******************************************************
  *                      Macros
  ******************************************************/
-#define ISOLATE_BYTE3(x) ((uint8_t) ((x & 0xFF000000) >> 24))
-#define ISOLATE_BYTE2(x) ((uint8_t) ((x & 0x00FF0000) >> 16))
-#define ISOLATE_BYTE1(x) ((uint8_t) ((x & 0x0000FF00) >> 8))
-#define ISOLATE_BYTE0(x) ((uint8_t)  (x & 0x000000FF))
 #define UNUSED(x) (void)(x)
 /******************************************************
  *                    Constants
@@ -63,8 +59,8 @@ uint32_t ber_tlv_serialize(uint32_t tag, uint8_t *output, uint32_t *outputLength
 uint32_t ber_tlv_serialize_constructed(uint32_t tag, uint8_t *output, uint32_t *outputLength);
 uint32_t ber_tlv_serialize_primitive(uint32_t tag, uint8_t *output, uint32_t *outputLength);
 uint32_t ber_tlv_serialize_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength);
-uint32_t ber_tlv_serialize_constructed_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength, uint32_t* offset_printf);
-uint32_t ber_tlv_serialize_primitive_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength, uint32_t* offset_printf);
+uint32_t ber_tlv_serialize_constructed_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength, uint32_t *bytes_remains, uint32_t* offset_printf);
+uint32_t ber_tlv_serialize_primitive_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength, uint32_t *bytes_remains, uint32_t* offset_printf);
 //Tools
 bool ber_tlv_is_constructed(uint32_t tag);
 uint32_t ber_tlv_get_num_bytes_tag(uint32_t tag);
@@ -77,7 +73,6 @@ ber_tlv_t ber_tlv_create_object(void);
 ber_tlv_t ber_tlv_parse(uint8_t *data, uint32_t dataLength, uint32_t *bytes_parsed);
 void ber_tlv_delete_value(ber_tlv_t tlv);
 void ber_tlv_delete_object(ber_tlv_t tlv);
-void ber_tlv_update_value(ber_tlv_t tlv, uint8_t *data, uint32_t data_len);
 //List Func
 uint32_t ber_tlv_push_to_list_primitive(ber_tlv_t tlv);
 uint32_t ber_tlv_push_to_list_constructed(ber_tlv_t tlv);
@@ -252,16 +247,17 @@ uint32_t ber_tlv_pretty(uint8_t * resp_str, int32_t *i32_resp_size, uint32_t u32
 uint32_t ber_tlv_push_to_list_primitive(ber_tlv_t tlv)
 {
     ber_tlv_object_t* ptlv_obj = (ber_tlv_object_t*)tlv;
-    ber_tlv_t aux_tlv = NULL;
-    //Verify if already existe the tag
+    ber_tlv_object_t* aux_tlv = NULL;
+    //Verify if already exist the tag
     aux_tlv = ber_tlv_get_from_list_primitive(ptlv_obj->tag); 
     if(aux_tlv == NULL) {
         //Push to TLV Primitive List
         llist_push(tags_primitive, (void*)tlv);
     } else {
-        //Update the value tag
-        ber_tlv_update_value(aux_tlv, ptlv_obj->value, ptlv_obj->length);
-        ber_tlv_delete_object(ptlv_obj);
+        //Update the value tag      
+        aux_tlv->length = ptlv_obj->length;
+        aux_tlv->value = ptlv_obj->value; //Copy pointer
+        ptlv_obj->tag = 0;
     }
     return 0;
 }
@@ -306,9 +302,18 @@ uint32_t ber_tlv_push_to_list_constructed(ber_tlv_t tlv)
     //Aux pointer to storage
     ber_tlv_t p_aux_tlv = NULL;
     ber_tlv_object_t* p_aux_obj_tlv = NULL;
-    //Alloc the construct info
-    ber_tlv_constructed_object_t* p_tlc_contructed = (ber_tlv_constructed_object_t *) malloc(sizeof(ber_tlv_constructed_object_t));
+    //Grab pointer
     ber_tlv_object_t* p_obj_tlv = (ber_tlv_object_t*)tlv;
+
+    //Alloc the construct info if was requered
+    ber_tlv_constructed_object_t* p_tlc_contructed = ber_tlv_get_from_list_constructed(p_obj_tlv->tag);
+    //Check if was null
+    if(p_tlc_contructed == NULL) {
+        p_tlc_contructed = (ber_tlv_constructed_object_t *) malloc(sizeof(ber_tlv_constructed_object_t));
+        //Push to TLV Constructed List
+        llist_push(tags_constructed,(void*)p_tlc_contructed);
+    }
+    
     //Copy information
     p_tlc_contructed->length = p_obj_tlv->length;
     p_tlc_contructed->tag = p_obj_tlv->tag;
@@ -330,6 +335,9 @@ uint32_t ber_tlv_push_to_list_constructed(ber_tlv_t tlv)
                 printf("%02X ",p_aux_obj_tlv->value[i]);
         }
 
+        //Store the tag into constructed struct and increment num_of_tags
+        p_tlc_contructed->p_child_tag[p_tlc_contructed->num++] = p_aux_obj_tlv->tag;
+
         //Verify if is constructed TLV
         if(ber_tlv_is_constructed(p_aux_obj_tlv->tag)) {
             ber_tlv_push_to_list_constructed(p_aux_tlv); //Recursive function
@@ -337,19 +345,16 @@ uint32_t ber_tlv_push_to_list_constructed(ber_tlv_t tlv)
             //Push to the list if is primitive
             ber_tlv_push_to_list_primitive(p_aux_tlv);
         }
-
-        //Store the tag into constructed struct and increment num_of_tags
-        p_tlc_contructed->p_child_tag[p_tlc_contructed->num++] = p_aux_obj_tlv->tag;
+        
         //Increment the offset
         u32_len_stored += u32_bytes_parsed;
 
     }while(u32_len_stored < p_tlc_contructed->length);
 
-    //Push to TLV Constructed List
-    llist_push(tags_constructed,(void*)p_tlc_contructed);
     return 0;
 
     error:
+    p_tlc_contructed->num = 0;
     ber_tlv_delete_object(p_aux_tlv);
     return -1;
 }
@@ -414,37 +419,6 @@ ber_tlv_t ber_tlv_create_object(void)
  * \return
  *
  ***************************************************************************************/
-void ber_tlv_update_value(ber_tlv_t tlv, uint8_t *data, uint32_t data_len)
-{
-    ber_tlv_object_t *ptr = NULL;
-    uint32_t copy_len = 0;
-
-    //Sanity check
-    if (!tlv || !data || !data_len) {
-        return;
-    }
-
-    //Grab pointer
-    ptr = (ber_tlv_object_t *) tlv;
-
-    if (data_len > ptr->length)
-        copy_len = ptr->length;
-    else
-        copy_len = data_len;
-
-    memcpy(ptr->value, data, copy_len);
-
-    return;
-}
-
-/****************************************************************************************
- * \brief
- *
- * \param
- *
- * \return
- *
- ***************************************************************************************/
 void ber_tlv_delete_value(ber_tlv_t tlv)
 {
     ber_tlv_object_t *ptr = NULL;
@@ -483,7 +457,8 @@ void ber_tlv_delete_object(ber_tlv_t tlv)
     ber_tlv_delete_value(tlv);
 
     //Free memory
-    free(tlv);
+    if(tlv != NULL)
+        free(tlv);
     return;
 }
 
@@ -660,13 +635,16 @@ uint32_t ber_tlv_serialize_pretty(uint32_t tag, uint8_t *output, uint32_t *outpu
 {
     uint32_t ret = 0;
     uint32_t offset_print = 0;
+    uint32_t byte_remains = *outputLength;
+    *outputLength = 0;
+
     //Clear the buffer
     memset(output, 0x00, *outputLength);
     //Verify if is constructed
     if (ber_tlv_is_constructed(tag))
-        ret = ber_tlv_serialize_constructed_pretty(tag, output, outputLength, &offset_print);
+        ret = ber_tlv_serialize_constructed_pretty(tag, &output[0], outputLength, &byte_remains, &offset_print);
     else 
-        ret = ber_tlv_serialize_primitive_pretty(tag, output, outputLength, &offset_print);
+        ret = ber_tlv_serialize_primitive_pretty(tag, output, outputLength, &byte_remains, &offset_print);
     
     return ret;
 }
@@ -678,46 +656,55 @@ uint32_t ber_tlv_serialize_pretty(uint32_t tag, uint8_t *output, uint32_t *outpu
  * \return
  *
  ***************************************************************************************/
-uint32_t ber_tlv_serialize_constructed_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength, uint32_t* offset_printf)
+uint32_t ber_tlv_serialize_constructed_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength, uint32_t *bytes_remains, uint32_t* offset_printf)
 {
     uint32_t offset = 0;
     uint32_t ret = 0;
     uint32_t aux_output_length = 0;
+
     //Sanity
-    if(outputLength == NULL)
+    if(outputLength == NULL || bytes_remains == NULL) 
         goto error;
 
     //Get the struct constructed
     ber_tlv_constructed_object_t* p_constrc =  ber_tlv_get_from_list_constructed(tag);
     if(p_constrc == NULL) 
         goto error;
+
+    // Verify if fits the tag
+    if (p_constrc->length + 50 >  *bytes_remains)
+        goto error;
    
     //Populate the output with pretty string
     offset += ber_tlv_tab_increment_pretty(*offset_printf, &output[offset]);
     sprintf((void *)&output[offset],"TAG – 0x%02X (%s,%s)\r\n", p_constrc->tag, ber_tlv_get_class(p_constrc->tag), ber_tlv_get_type(p_constrc->tag));
-    offset = strlen((const char *)output);
+    offset += strlen((const char *)&output[offset]);
     
     offset += ber_tlv_tab_increment_pretty(*offset_printf, &output[offset]);
     sprintf((void *)&output[offset],"LEN – %d \r\n", p_constrc->length);
-    offset = strlen((const char *)output);
+    offset += strlen((const char *)&output[offset]);
+    
+    //Empty line
+    sprintf((void *)&output[offset],"\r\n");
+    offset += strlen((const char *)&output[offset]);
 
     //Increment the offset
     *offset_printf += 1;
     //Populate with primitive and constructs
-    for(uint16_t i =0; i < p_constrc->num; i++) {        
-        //Calculate how many bytes remains
-        aux_output_length = *outputLength - offset;
+    for(uint16_t i =0; i < p_constrc->num; i++) {
         //Verify if is constructed
         if(ber_tlv_is_constructed(p_constrc->p_child_tag[i]))
-            ret = ber_tlv_serialize_constructed_pretty(p_constrc->p_child_tag[i], &output[offset], &aux_output_length, offset_printf);//Recursive function
+            ret = ber_tlv_serialize_constructed_pretty(p_constrc->p_child_tag[i], &output[offset], &aux_output_length, bytes_remains, offset_printf); //Recursive function
         else
-            ret = ber_tlv_serialize_primitive_pretty(p_constrc->p_child_tag[i], &output[offset], &aux_output_length, offset_printf);
+            ret = ber_tlv_serialize_primitive_pretty(p_constrc->p_child_tag[i], &output[offset], &aux_output_length, bytes_remains, offset_printf);
+
+        //Refresh the strng len
+        offset += aux_output_length;
         //Verify if parse rigth
         if(ret)
             goto error;
-        //Refresh the strng len
-        offset = strlen((const char *)output);
     }
+    
     //Decrement the offset
     *offset_printf -= 1;
 
@@ -736,7 +723,7 @@ uint32_t ber_tlv_serialize_constructed_pretty(uint32_t tag, uint8_t *output, uin
  * \return
  *
  ***************************************************************************************/
-uint32_t ber_tlv_serialize_primitive_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength, uint32_t* offset_printf)
+uint32_t ber_tlv_serialize_primitive_pretty(uint32_t tag, uint8_t *output, uint32_t *outputLength, uint32_t *bytes_remains, uint32_t* offset_printf)
 {
     uint32_t offset = 0;
 
@@ -746,21 +733,21 @@ uint32_t ber_tlv_serialize_primitive_pretty(uint32_t tag, uint8_t *output, uint3
         goto error;
 
     // Verify if fits the tag
-    if (p_tlv->length + 8 >  *outputLength)
+    if (p_tlv->length + 8 >  *bytes_remains)
         goto error;
 
     //Populate the output with pretty string
     offset += ber_tlv_tab_increment_pretty(*offset_printf, &output[offset]);
     sprintf((void *)&output[offset],"TAG – 0x%02X (%s,%s)\r\n", p_tlv->tag, ber_tlv_get_class(p_tlv->tag), ber_tlv_get_type(p_tlv->tag));
-    offset = strlen((const char *)output);
+    offset += strlen((const char *)&output[offset]);
     
     offset += ber_tlv_tab_increment_pretty(*offset_printf, &output[offset]);
     sprintf((void *)&output[offset],"LEN – %d \r\n", p_tlv->length);
-    offset = strlen((const char *)output);
+    offset += strlen((const char *)&output[offset]);
     
     offset += ber_tlv_tab_increment_pretty(*offset_printf, &output[offset]);
     sprintf((void *)&output[offset],"VAL – ");
-    offset = strlen((const char *)output);
+    offset += strlen((const char *)&output[offset]);
     
     //Verify the tag length and copy data
     if (p_tlv->length > 0) {
@@ -771,12 +758,16 @@ uint32_t ber_tlv_serialize_primitive_pretty(uint32_t tag, uint8_t *output, uint3
     }
     //Empty line
     sprintf((void *)&output[offset],"\r\n\r\n");
-    offset = strlen((const char *)output);
+    offset += strlen((const char *)&output[offset]);
    
     //Update the length parsed
     if (outputLength) {
         *outputLength = offset;
     }
+    if (bytes_remains) {
+        *bytes_remains -= offset;
+    }
+    
     return 0;
 
     error:
@@ -851,9 +842,11 @@ ber_tlv_t ber_tlv_parse(uint8_t *data, uint32_t dataLength, uint32_t *bytes_pars
 
     return ptr;
     
-    error:    
-    free(ptr->value);
-    free(ptr);
+    error: 
+    if(ptr->value != NULL)   
+        free(ptr->value);
+    if(ptr != NULL)     
+        free(ptr);
     return NULL;
 }
 
@@ -987,8 +980,8 @@ uint32_t ber_tlv_tab_increment_pretty(uint32_t num_tab, uint8_t* str)
 {
     uint32_t offset = 0;
     for (uint32_t i = 0; i < num_tab; i++) {
-        sprintf((void*)str, "   ");
-        offset += 3;
+        sprintf((void*)&str[offset], "      ");
+        offset += 6;
     }
     return offset;
 }
